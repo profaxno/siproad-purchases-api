@@ -1,0 +1,29 @@
+version: '3'
+
+services:
+  siproad-purchases-api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_IMG_NAME}
+    container_name: ${DOCKER_APP_CONTAINER_NAME}
+    restart: always
+    ports:
+      - "${PORT}:${PORT}"
+    # working_dir: /var/www/pokedex
+    env_file:
+      - .env
+    # environment:
+    #   PORT: ${PORT}
+    #   HTTP_TIMEOUT: ${HTTP_TIMEOUT}
+    #   HTTP_MAX_REDIRECTS: ${HTTP_MAX_REDIRECTS}
+    #   EXECUTION_RETRIES: ${EXECUTION_RETRIES}
+    #   EXECUTION_BASE_DELAY: ${EXECUTION_BASE_DELAY}
+    #   DB_HOST: ${DB_HOST}
+    #   DB_PORT: ${DB_PORT}
+    #   DB_NAME: ${DB_NAME}
+    #   DB_USERNAME: ${DB_USERNAME}
+    #   DB_PASSWORD: ${DB_PASSWORD}
+    #   DB_DEFAULT_LIMIT: 1000
+    # volumes:
+    #   - ./:/var/www/pokedex
