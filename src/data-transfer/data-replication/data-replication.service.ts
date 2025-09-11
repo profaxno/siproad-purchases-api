@@ -71,7 +71,7 @@ export class DataReplicationService {
         return this.dataReplicationAwsService.sendMessage(messageDto);
 
       case QueueTypeEnum.REDIS:
-        return this.dataReplicationRedisProducerService.sendMessage(messageDto);
+        return this.dataReplicationRedisProducerService.sendMessageToQueues(messageDto);
 
       default:
         throw new Error(`process not implement, process=${messageDto.process}`);

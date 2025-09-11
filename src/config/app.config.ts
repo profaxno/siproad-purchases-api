@@ -15,6 +15,6 @@ export const config = () => ({
     redisPassword: process.env.REDIS_PASSWORD,
     redisFamily: +process.env.REDIS_FAMILY,
     redisJobQueuePurchases: process.env.REDIS_JOB_QUEUE_PURCHASES,
-    redisJobQueueInventory: process.env.REDIS_JOB_QUEUE_INVENTORY
+    redisJobQueueProducts: process.env.REDIS_JOB_QUEUE_PRODUCTS
 
   })
