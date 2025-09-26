@@ -1,4 +1,4 @@
-import { Brackets, DataSource, In, InsertResult, Like, Raw, Repository } from 'typeorm';
+import { Brackets, DataSource, EntityManager, In, InsertResult, Like, Raw, Repository } from 'typeorm';
 import { isUUID } from 'class-validator';
 import * as moment from 'moment-timezone';
 
@@ -14,15 +14,12 @@ import { PurchaseOrderDto, PurchaseOrderProductDto } from './dto/purchase-order.
 import { PurchaseOrderSearchInputDto } from './dto/purchase-order-search.dto';
 import { PurchaseOrder, PurchaseOrderProduct } from './entities';
 
-import { Company } from '../companies/entities/company.entity';
-import { CompanyService } from '../companies/company.service';
+import { PurchaseTypeDto } from './dto/purchase-type.dto';
+import { PurchaseType } from './entities/purchase-type.entity';
 
+import { Company } from '../companies/entities/company.entity';
 
 import { User } from '../users/entities/user.entity';
-import { UserService } from '../users/user.service';
-
-import { Product } from '../products/entities';
-import { ProductService } from '../products/product.service';
 
 import { MessageDto } from 'src/data-transfer/dto/message.dto';
 import { ProcessEnum, SourceEnum } from 'src/data-transfer/enums';
@@ -30,19 +27,15 @@ import { ProcessEnum, SourceEnum } from 'src/data-transfer/enums';
 import { MovementDto } from 'src/products/dto/movement.dto';
 import { MovementReasonEnum, MovementTypeEnum } from 'src/products/enums';
 
-import { DocumentTypeDto } from './dto/document-type.dto';
-import { DocumentType } from '../documentTypes/entities/document-type.entity';
-
 import { DataReplicationService } from 'src/data-transfer/data-replication/data-replication.service';
 import { PurchaseOrderStatusEnum } from './enums/purchase-order-status.enum';
 
 import { JsonBasic } from 'src/data-transfer/interface/json-basic.interface';
 
-import { PurchaseTypeDto } from './dto/purchase-type.dto';
-import { PurchaseType } from './entities/purchase-type.entity';
 
-import { PurchaseSequence } from './entities/purchase-sequence.entity';
-import { ProductDto } from '../products/dto';
+import { Sequence } from './entities/sequence.entity';
+import { SequenceTypeEnum } from './enums/secuence-type.enum';
+import { ProductCostDto } from 'src/products/dto/product-cost.dto';
 
 @Injectable()
 export class PurchaseOrderService {
@@ -58,42 +51,16 @@ export class PurchaseOrderService {
     private readonly dataSource: DataSource,
 
     @InjectRepository(PurchaseOrder, 'purchasesConn')
-    private readonly purchaseOrderRepository: Repository<PurchaseOrder>,
+    private readonly orderRepository: Repository<PurchaseOrder>,
     
     @InjectRepository(PurchaseOrderProduct, 'purchasesConn')
-    private readonly purchaseOrderProductRepository: Repository<PurchaseOrderProduct>,
+    private readonly orderProductRepository: Repository<PurchaseOrderProduct>,
 
-    private readonly productService: ProductService,
     private readonly replicationService: DataReplicationService
     
   ){
     this.dbDefaultLimit = this.ConfigService.get("dbDefaultLimit");
   }
-
-  // async updateBatch(dtoList: PurchaseOrderDto[]): Promise<ProcessSummaryDto>{
-  //   this.logger.warn(`updateBatch: starting process... listSize=${dtoList.length}`);
-  //   const start = performance.now();
-    
-  //   let processSummaryDto: ProcessSummaryDto = new ProcessSummaryDto(dtoList.length);
-  //   let i = 0;
-  //   for (const dto of dtoList) {
-      
-  //     await this.update(dto)
-  //     .then( () => {
-  //       processSummaryDto.rowsOK++;
-  //       processSummaryDto.detailsRowsOK.push(`(${i++}) name=${dto.name}, message=OK`);
-  //     })
-  //     .catch(error => {
-  //       processSummaryDto.rowsKO++;
-  //       processSummaryDto.detailsRowsKO.push(`(${i++}) name=${dto.name}, error=${error}`);
-  //     })
-
-  //   }
-    
-  //   const end = performance.now();
-  //   this.logger.log(`updateBatch: executed, runtime=${(end - start) / 1000} seconds`);
-  //   return processSummaryDto;
-  // }
 
   update(dto: PurchaseOrderDto): Promise<PurchaseOrderDto> {
     if(!dto.id)
@@ -102,32 +69,54 @@ export class PurchaseOrderService {
     this.logger.warn(`update: starting process... dto=${JSON.stringify(dto)}`);
     const start = performance.now();
 
-    return this.purchaseOrderRepository.findOne({
+    return this.orderRepository.findOne({
       where: { id: dto.id },
     })
     .then( (entity: PurchaseOrder) => {
-
+      
       // * validate
-      if(!entity){
+      if(!entity) {
         const msg = `entity not found, id=${dto.id}`;
         this.logger.warn(`update: not executed (${msg})`);
         throw new NotFoundException(msg);
       }
       
-      return entity;
-    })
-    .then( (entity: PurchaseOrder) => this.prepareEntity(entity, dto) )// * prepare
-    .then( (entity: PurchaseOrder) => this.save(entity) ) // * update
-    .then( (entity: PurchaseOrder) => {
+      // * generate a list of products to update their cost
+      const productIdListToUpdateCost = dto.productList.filter(value => value.updateProductCost).map(value => value.id);
 
-      return this.updatePurchaseOrderProduct(entity, dto.productList) // * create purchaseOrderProduct
-      .then( (purchaseOrderProductList: PurchaseOrderProduct[]) => this.generatePurchaseOrderWithProductList(entity, purchaseOrderProductList) ) // * generate order with purchaseOrderProduct
-      .then( (dto: PurchaseOrderDto) => {
-        this.updateMovements(dto);
-      
-        const end = performance.now();
-        this.logger.log(`update: executed, runtime=${(end - start) / 1000} seconds`);
-        return dto;
+      return this.updateStockMovements(dto) // * update stock movements
+      .then( () => {
+
+        // * process with transaction db
+        return this.dataSource.transaction( (manager: EntityManager) => {
+
+          // * get repositories
+          const orderRepository : Repository<PurchaseOrder> = manager.getRepository(PurchaseOrder);
+          const orderProductRepository: Repository<PurchaseOrderProduct> = manager.getRepository(PurchaseOrderProduct);
+
+          return this.prepareEntity(entity, dto) // * prepare
+          .then( (entity: PurchaseOrder) => this.save(entity, orderRepository) ) // * save
+          .then( (entity: PurchaseOrder) => {
+            return this.updatePurchaseOrderProduct(entity, dto.productList, orderProductRepository) 
+            .then( (orderProductList: PurchaseOrderProduct[]) => this.generatePurchaseOrderWithProductList(entity, orderProductList) )
+          })
+          .then( (dto: PurchaseOrderDto) => {
+            this.updateProductCost(dto, productIdListToUpdateCost);
+            return dto;
+          })
+
+        })
+        .then( (dto: PurchaseOrderDto) => {
+          const end = performance.now();
+          this.logger.log(`update: OK, runtime=${(end - start) / 1000} seconds`);
+          return dto;
+        })
+        .catch(error => {
+          const dto: PurchaseOrderDto = this.generatePurchaseOrderWithProductList(entity, entity.purchaseOrderProduct);
+          this.updateStockMovements(dto); // * rollback stock movements
+          throw error;
+        })
+
       })
 
     })
@@ -139,67 +128,55 @@ export class PurchaseOrderService {
       throw error;
     })
 
-    // // * find order
-    // const inputDto: SearchInputDto = new SearchInputDto(dto.id);
-      
-    // return this.findByValue({}, inputDto)
-    // .then( (entityList: PurchaseOrder[]) => {
-
-    //   // * validate
-    //   if(entityList.length == 0){
-    //     const msg = `order not found, id=${dto.id}`;
-    //     this.logger.warn(`update: not executed (${msg})`);
-    //     throw new NotFoundException(msg);
-    //   }
-
-    //   // * update
-    //   const entity = entityList[0];
-      
-    //   return this.prepareEntity(entity, dto) // * prepare
-    //   .then( (entity: PurchaseOrder) => this.save(entity) ) // * update
-    //   .then( (entity: PurchaseOrder) => {
-        
-    //     return this.updatePurchaseOrderProduct(entity, dto.productList) // * create purchaseOrderProduct
-    //     .then( (purchaseOrderProductList: PurchaseOrderProduct[]) => this.generatePurchaseOrderWithProductList(entity, purchaseOrderProductList) ) // * generate order with purchaseOrderProduct
-    //     .then( (dto: PurchaseOrderDto) => {
-    //       this.updateMovements(dto);
-        
-    //       const end = performance.now();
-    //       this.logger.log(`update: executed, runtime=${(end - start) / 1000} seconds`);
-    //       return dto;
-    //     })
-
-    //   })
-      
-    // })
-    // .catch(error => {
-    //   if(error instanceof NotFoundException)
-    //     throw error;
-
-    //   this.logger.error(`update: error=${error.message}`);
-    //   throw error;
-    // })
-
   }
 
   create(dto: PurchaseOrderDto): Promise<PurchaseOrderDto> {
     this.logger.warn(`create: starting process... dto=${JSON.stringify(dto)}`);
     const start = performance.now();
 
-    const entity = new PurchaseOrder();
-    
-    return this.prepareEntity(entity, dto) // * prepare
-    .then( (entity: PurchaseOrder) => this.saveGenerateCode(entity) ) // * update
-    .then( (entity: PurchaseOrder) => {
+    // * generate a list of products to update their cost
+    const productIdListToUpdateCost = dto.productList.filter(value => value.updateProductCost).map(value => value.id);
 
-      return this.updatePurchaseOrderProduct(entity, dto.productList) // * create purchaseOrderProduct
-      .then( (purchaseOrderProductList: PurchaseOrderProduct[]) => this.generatePurchaseOrderWithProductList(entity, purchaseOrderProductList) ) // * generate order with purchaseOrderProduct
-      .then( (dto: PurchaseOrderDto) => {
-        this.updateMovements(dto);
-      
+    // * process with transaction db
+    return this.dataSource.transaction( (manager: EntityManager) => {
+
+      // * get repositories
+      const purchaseSequenceRepository: Repository<Sequence> = manager.getRepository(Sequence);
+      const orderRepository : Repository<PurchaseOrder> = manager.getRepository(PurchaseOrder);
+      const orderProductRepository: Repository<PurchaseOrderProduct> = manager.getRepository(PurchaseOrderProduct);
+
+      return this.generateCode(dto.companyId, SequenceTypeEnum.ORDER, purchaseSequenceRepository) // * generate code
+      .then( (code: number) => {
+
+        // * set code
+        dto.code = code;
+
+        return this.prepareEntity(new PurchaseOrder(), dto) // * prepare
+        .then( (entity: PurchaseOrder) => this.save(entity, orderRepository) ) // * save
+        .then( (entity: PurchaseOrder) => {
+          return this.updatePurchaseOrderProduct(entity, dto.productList, orderProductRepository) 
+          .then( (orderProductList: PurchaseOrderProduct[]) => this.generatePurchaseOrderWithProductList(entity, orderProductList) ) // * generate dto
+          .then( (dto: PurchaseOrderDto) => {
+            this.updateProductCost(dto, productIdListToUpdateCost);
+            return dto;
+          })
+
+        })
+
+      })
+
+    })
+    .then( (dto: PurchaseOrderDto) => {
+
+      return this.updateStockMovements(dto) // * update stock movements
+      .then( () => {
         const end = performance.now();
         this.logger.log(`create: executed, runtime=${(end - start) / 1000} seconds`);
         return dto;
+      })
+      .catch(error => {
+        this.remove(dto.id); // * rollback
+        throw error;
       })
 
     })
@@ -210,14 +187,14 @@ export class PurchaseOrderService {
       this.logger.error(`create: error=${error.message}`);
       throw error;
     })
-    
+
   }
 
   remove(id: string): Promise<string> {
     this.logger.log(`remove: starting process... id=${id}`);
     const start = performance.now();
 
-    return this.purchaseOrderRepository.findOne({
+    return this.orderRepository.findOne({
       where: { id },
     })
     .then( (entity: PurchaseOrder) => {
@@ -295,31 +272,6 @@ export class PurchaseOrderService {
 
   }
 
-  // find(companyId: string, paginationDto: SearchPaginationDto, inputDto: SearchInputDto): Promise<PurchaseOrderDto[]> {
-  //   const start = performance.now();
-
-  //   return this.findByValue(paginationDto, inputDto, companyId)
-  //   .then( (entityList: PurchaseOrder[]) => entityList.map( (entity) => this.generatePurchaseOrderWithProductList(entity, entity.purchaseOrderProduct) ) )
-  //   .then( (dtoList: PurchaseOrderDto[]) => {
-      
-  //     if(dtoList.length == 0){
-  //       const msg = `orders not found`;
-  //       this.logger.warn(`find: ${msg}`);
-  //       return [];
-  //       // throw new NotFoundException(msg);
-  //     }
-
-  //     const end = performance.now();
-  //     this.logger.log(`find: executed, runtime=${(end - start) / 1000} seconds`);
-  //     return dtoList;
-  //   })
-  //   .catch(error => {
-  //     this.logger.error(`find: error`, error);
-  //     throw error;
-  //   })
- 
-  // }
-
   searchByValues(companyId: string, paginationDto: SearchPaginationDto, inputDto: PurchaseOrderSearchInputDto): Promise<PurchaseOrderDto[]> {
     const start = performance.now();
 
@@ -347,34 +299,25 @@ export class PurchaseOrderService {
     
   }
 
-  // findOneById(id: string, companyId?: string): Promise<PurchaseOrderDto[]> {
-  //   const start = performance.now();
-  //   const inputDto: SearchInputDto = new SearchInputDto(id);
-        
-  //   // * find product
-  //   return this.findByValue({}, inputDto, companyId)
-  //   .then( (entityList: PurchaseOrder[]) => entityList.map( (entity) => this.generatePurchaseOrderWithProductList(entity, entity.purchaseOrderProduct) ) )
-  //   .then( (dtoList: PurchaseOrderDto[]) => {
-      
-  //     if(dtoList.length == 0){
-  //       const msg = `entity not found, id=${id}`;
-  //       this.logger.warn(`findOneById: ${msg}`);
-  //       throw new NotFoundException(msg);
-  //     }
+  private async generateCode(companyId: string, type: SequenceTypeEnum, saleSequenceRepository: Repository<Sequence>): Promise<number> {
 
-  //     const end = performance.now();
-  //     this.logger.log(`findOneById: executed, runtime=${(end - start) / 1000} seconds`);
-  //     return dtoList;
-  //   })
-  //   .catch(error => {
-  //     if(error instanceof NotFoundException)
-  //       throw error;
+    let sequenceEntity = await saleSequenceRepository
+    .createQueryBuilder('a')
+    .setLock('pessimistic_write')
+    .where('a.companyId = :companyId', { companyId })
+    .andWhere('a.type = :type', { type })
+    .getOne();
 
-  //     this.logger.error(`findOneById: error`, error);
-  //     throw error;
-  //   })
-    
-  // }
+    // * increase sequence
+    if (!sequenceEntity) 
+      sequenceEntity = saleSequenceRepository.create({ companyId, lastCode: 1 });
+    else sequenceEntity.lastCode += 1;
+
+    // * save sequence
+    await saleSequenceRepository.save(sequenceEntity);
+
+    return sequenceEntity.lastCode;
+  }
 
   private prepareEntity(entity: PurchaseOrder, dto: PurchaseOrderDto): Promise<PurchaseOrder> {
   
@@ -387,26 +330,27 @@ export class PurchaseOrderService {
     const purchaseType = new PurchaseType();
     purchaseType.id = dto.purchaseTypeId;
 
-    const documentType = new DocumentType();
-    documentType.id = dto.documentTypeId;
+    // const documentType = new DocumentType();
+    // documentType.id = dto.documentTypeId;
 
     try {
       entity.id           = dto.id ? dto.id : undefined;
       entity.code         = dto.code ? dto.code : undefined;
-      entity.company      = company;
-      entity.user         = user;
-      entity.purchaseType = purchaseType;
-      entity.documentType = dto.documentTypeId ? documentType : undefined;
-      entity.providerIdDoc= dto.providerIdDoc?.toUpperCase();
       entity.providerName = dto.providerName?.toUpperCase();
+      entity.providerIdDoc= dto.providerIdDoc?.toUpperCase();
       entity.providerEmail= dto.providerEmail?.toUpperCase();
       entity.providerPhone= dto.providerPhone;
       entity.providerAddress = dto.providerAddress?.toUpperCase();
       entity.comment      = dto.comment;
       entity.amount       = dto.amount;
+      entity.documentTypeId = dto.documentTypeId;
       entity.documentNumber = dto.documentNumber;
       entity.status       = dto.status;
-      
+      entity.company      = company;
+      entity.user         = user;
+      entity.purchaseType = purchaseType;
+      // entity.documentType = dto.documentTypeId ? documentType : undefined;
+
       return Promise.resolve(entity);
 
     } catch (error) {
@@ -416,64 +360,15 @@ export class PurchaseOrderService {
     
   }
 
-  // private prepareEntity(entity: PurchaseOrder, dto: PurchaseOrderDto): Promise<PurchaseOrder> {
-  
-  //   // * find company
-  //   const inputDto: SearchInputDto = new SearchInputDto(dto.companyId);
-    
-  //   return this.companyService.findByValue({}, inputDto)
-  //   .then( (companyList: Company[]) => {
-
-  //     if(companyList.length == 0){
-  //       const msg = `company not found, id=${dto.companyId}`;
-  //       this.logger.warn(`create: not executed (${msg})`);
-  //       throw new NotFoundException(msg);
-  //     }
-
-  //     // * find user
-  //     const inputDto: SearchInputDto = new SearchInputDto(dto.userId);
-
-  //     return this.userService.findByValue({}, inputDto)
-  //     .then( (userList: User[]) => {
-    
-  //       if(userList.length == 0){
-  //         const msg = `user not found, id=${dto.companyId}`;
-  //         this.logger.warn(`create: not executed (${msg})`);
-  //         throw new NotFoundException(msg);
-  //       }
-
-  //       return ( dto.code ? Promise.resolve(dto.code) : this.generateCode(dto.companyId) )// * generate code
-  //       .then( (code: string) => {
-          
-  //         // * prepare entity
-  //         entity.code           = code.toUpperCase();
-  //         entity.company        = companyList[0];
-  //         entity.user           = userList[0];
-  //         entity.providerIdDoc  = dto.providerIdDoc?.toUpperCase();
-  //         entity.providerName   = dto.providerName?.toUpperCase();
-  //         entity.providerEmail  = dto.providerEmail?.toUpperCase();
-  //         entity.providerPhone  = dto.providerPhone;
-  //         entity.providerAddress = dto.providerAddress?.toUpperCase();
-  //         entity.comment        = dto.comment;
-  //         entity.discount       = dto.discount;
-  //         entity.discountPct    = dto.discountPct;
-  //         entity.status         = dto.status;
-          
-  //         return entity;
-  //       })
-
-  //     })
-      
-  //   })
-    
-  // }
-
-  private save(entity: PurchaseOrder): Promise<PurchaseOrder> {
+  private save(entity: PurchaseOrder, orderRepository?: Repository<PurchaseOrder>): Promise<PurchaseOrder> {
     const start = performance.now();
 
-    const newEntity: PurchaseOrder = this.purchaseOrderRepository.create(entity);
+    if(!orderRepository)
+      orderRepository = this.orderRepository;
 
-    return this.purchaseOrderRepository.save(newEntity)
+    const newEntity: PurchaseOrder = orderRepository.create(entity);
+
+    return orderRepository.save(newEntity)
     .then( (entity: PurchaseOrder) => {
       const end = performance.now();
       this.logger.log(`save: OK, runtime=${(end - start) / 1000} seconds, entity=${JSON.stringify(entity)}`);
@@ -481,106 +376,51 @@ export class PurchaseOrderService {
     })
   }
 
-  private saveGenerateCode(entity: PurchaseOrder): Promise<PurchaseOrder> {
+  private updatePurchaseOrderProduct(order: PurchaseOrder, orderProductDtoList: PurchaseOrderProductDto[] = [], orderProductRepository: Repository<PurchaseOrderProduct>): Promise<PurchaseOrderProduct[]> {
+    this.logger.log(`updatePurchaseOrderProduct: starting process... order=${JSON.stringify(order)}, orderProductDtoList=${JSON.stringify(orderProductDtoList)}`);
     const start = performance.now();
 
-    return this.dataSource.transaction( async(manager) => {
-
-      const companyId = entity.company.id;
-      
-      // * get sequence
-      const purchaseSequenceRepository = manager.getRepository(PurchaseSequence);
-      
-      let sequenceEntity = await purchaseSequenceRepository
-      .createQueryBuilder('a')
-      .setLock('pessimistic_write')
-      .where('a.companyId = :companyId', { companyId })
-      .getOne();
-
-      // * increase sequence
-      if (!sequenceEntity) 
-        sequenceEntity = purchaseSequenceRepository.create({ companyId, lastCode: 1 });
-      else sequenceEntity.lastCode += 1;
-
-      // * save sequence
-      await purchaseSequenceRepository.save(sequenceEntity);
-
-      // * generate order
-      const purchaseOrderRepository = manager.getRepository(PurchaseOrder);
-
-      const newOrder = purchaseOrderRepository.create({
-        ...entity,
-        code: sequenceEntity.lastCode
-      });
-
-      // * save order
-      return purchaseOrderRepository.save(newOrder);
-
-    })
-    .then( (entity: PurchaseOrder) => {
-      const end = performance.now();
-      this.logger.log(`saveGenerateCode: OK, runtime=${(end - start) / 1000} seconds, entity=${JSON.stringify(entity)}`);
-      return entity;
-    })
-  }
-
-  private updatePurchaseOrderProduct(order: PurchaseOrder, purchaseOrderProductDtoList: PurchaseOrderProductDto[] = []): Promise<PurchaseOrderProduct[]> {
-    this.logger.log(`updatePurchaseOrderProduct: starting process... order=${JSON.stringify(order)}, purchaseOrderProductDtoList=${JSON.stringify(purchaseOrderProductDtoList)}`);
-    const start = performance.now();
-
-    if(purchaseOrderProductDtoList.length == 0){
-      this.logger.warn(`updatePurchaseOrderProduct: not executed (order product list empty)`);
+    if(orderProductDtoList.length == 0){
+      this.logger.warn('updatePurchaseOrderProduct: not executed (order product list empty)');
       return Promise.resolve([]);
     }
 
-    // * find products by id
-    const productIdList = purchaseOrderProductDtoList.map( (item) => item.id );
-    const uniqueProductIdList: string[] = [...new Set(productIdList)]; // * remove duplicates
-
-    // const inputDto: SearchInputDto = new SearchInputDto(undefined, undefined, uniqueProductIdList);
-
-    return this.productService.findByIds({}, uniqueProductIdList)
-    .then( (productList: Product[]) => {
-
-      // * validate
-      if(productList.length !== uniqueProductIdList.length){
-        const productIdNotFoundList: string[] = uniqueProductIdList.filter( (id) => !productList.find( (product) => product.id == id) );
-        const msg = `products not found, IdList=(${uniqueProductIdList.length})${JSON.stringify(uniqueProductIdList)}, IdNotFoundList=(${productIdNotFoundList.length})${JSON.stringify(productIdNotFoundList)}`;
-        throw new NotFoundException(msg); 
-      }
-
-      // * generate order product list
-      return purchaseOrderProductDtoList.map( (purchaseOrderProductDto: PurchaseOrderProductDto) => {
+    // * create order-product
+    return orderProductRepository.find({
+      where: { purchaseOrder: order },
+    })
+    .then( (orderProductList: PurchaseOrderProduct[]) => orderProductRepository.remove(orderProductList) ) // * remove order products
+    .then( () => {
+      
+      // * generate list to insert
+      const orderProductList: PurchaseOrderProduct[] = orderProductDtoList.map( (value) => {
         
-        const product = productList.find( (value) => value.id == purchaseOrderProductDto.id);
-
-        const purchaseOrderProduct = new PurchaseOrderProduct();
-        purchaseOrderProduct.purchaseOrder = order;
-        purchaseOrderProduct.product  = product;
-        purchaseOrderProduct.qty      = purchaseOrderProductDto.qty;
-        purchaseOrderProduct.comment  = purchaseOrderProductDto.comment;
-        purchaseOrderProduct.name     = product.name;
-        purchaseOrderProduct.code     = product.code;
-        purchaseOrderProduct.cost     = purchaseOrderProductDto.cost;
-        purchaseOrderProduct.amount   = purchaseOrderProductDto.amount;
-        purchaseOrderProduct.status   = purchaseOrderProductDto.status;
+        const orderProduct = new PurchaseOrderProduct();
+        orderProduct.purchaseOrderCode = order.code;
+        orderProduct.productId= value.id;
+        orderProduct.name     = value.name;
+        orderProduct.code     = value.code;
+        orderProduct.qty      = value.qty;
+        orderProduct.comment  = value.comment;
+        orderProduct.cost     = value.cost;
+        orderProduct.amount   = value.amount;
+        orderProduct.status   = value.status;
+        orderProduct.purchaseOrder = order;
         
-        return purchaseOrderProduct;
+        return orderProductRepository.create(orderProduct);
       })
 
-    })
-    .then( (purchaseOrderProductListToInsert: PurchaseOrderProduct[]) => {
-      
-      return this.purchaseOrderProductRepository.findBy( { purchaseOrder: order } ) // * find order products to remove
-      .then( (purchaseOrderProductListToDelete: PurchaseOrderProduct[]) => this.purchaseOrderProductRepository.remove(purchaseOrderProductListToDelete) ) // * remove order products
-      .then( () => this.bulkInsertPurchaseOrderProducts(purchaseOrderProductListToInsert) ) // * insert order products
-      .then( (purchaseOrderProductList: PurchaseOrderProduct[]) => {
-
-        this.updateProductCost(purchaseOrderProductDtoList, purchaseOrderProductList);
-
+      // * bulk insert
+      return orderProductRepository
+      .createQueryBuilder()
+      .insert()
+      .into(PurchaseOrderProduct)
+      .values(orderProductList)
+      .execute()
+      .then( (insertResult: InsertResult) => {
         const end = performance.now();
-        this.logger.log(`updatePurchaseOrderProduct: OK, runtime=${(end - start) / 1000} seconds`);
-        return purchaseOrderProductList;
+        this.logger.log(`updatePurchaseOrderProduct: OK, runtime=${(end - start) / 1000} seconds, insertResult=${JSON.stringify(insertResult.raw)}`);
+        return orderProductList;
       })
 
     })
@@ -591,118 +431,144 @@ export class PurchaseOrderService {
 
   }
 
-  private bulkInsertPurchaseOrderProducts(purchaseOrderProductList: PurchaseOrderProduct[]): Promise<PurchaseOrderProduct[]> {
-    const start = performance.now();
-    this.logger.log(`bulkInsertPurchaseOrderProducts: starting process... listSize=${purchaseOrderProductList.length}`);
+  // private updatePurchaseOrderProduct(order: PurchaseOrder, purchaseOrderProductDtoList: PurchaseOrderProductDto[] = []): Promise<PurchaseOrderProduct[]> {
+  //   this.logger.log(`updatePurchaseOrderProduct: starting process... order=${JSON.stringify(order)}, purchaseOrderProductDtoList=${JSON.stringify(purchaseOrderProductDtoList)}`);
+  //   const start = performance.now();
 
-    const newPurchaseOrderProductList: PurchaseOrderProduct[] = purchaseOrderProductList.map( (value) => this.purchaseOrderProductRepository.create(value));
-    
-    try {
-      return this.purchaseOrderProductRepository.manager.transaction( async(transactionalEntityManager) => {
+  //   if(purchaseOrderProductDtoList.length == 0){
+  //     this.logger.warn(`updatePurchaseOrderProduct: not executed (order product list empty)`);
+  //     return Promise.resolve([]);
+  //   }
+
+  //   // * find products by id
+  //   const productIdList = purchaseOrderProductDtoList.map( (item) => item.id );
+  //   const uniqueProductIdList: string[] = [...new Set(productIdList)]; // * remove duplicates
+
+  //   // const inputDto: SearchInputDto = new SearchInputDto(undefined, undefined, uniqueProductIdList);
+
+  //   return this.productService.findByIds({}, uniqueProductIdList)
+  //   .then( (productList: Product[]) => {
+
+  //     // * validate
+  //     if(productList.length !== uniqueProductIdList.length){
+  //       const productIdNotFoundList: string[] = uniqueProductIdList.filter( (id) => !productList.find( (product) => product.id == id) );
+  //       const msg = `products not found, IdList=(${uniqueProductIdList.length})${JSON.stringify(uniqueProductIdList)}, IdNotFoundList=(${productIdNotFoundList.length})${JSON.stringify(productIdNotFoundList)}`;
+  //       throw new NotFoundException(msg); 
+  //     }
+
+  //     // * generate order product list
+  //     return purchaseOrderProductDtoList.map( (purchaseOrderProductDto: PurchaseOrderProductDto) => {
         
-        return transactionalEntityManager
-        .createQueryBuilder()
-        .insert()
-        .into(PurchaseOrderProduct)
-        .values(newPurchaseOrderProductList)
-        .execute()
-        .then( (insertResult: InsertResult) => {
-          const end = performance.now();
-          this.logger.log(`bulkInsertPurchaseOrderProducts: OK, runtime=${(end - start) / 1000} seconds, insertResult=${JSON.stringify(insertResult.raw)}`);
-          return newPurchaseOrderProductList;
-        })
+  //       const product = productList.find( (value) => value.id == purchaseOrderProductDto.id);
 
-      })
+  //       const purchaseOrderProduct = new PurchaseOrderProduct();
+  //       purchaseOrderProduct.purchaseOrder = order;
+  //       purchaseOrderProduct.product  = product;
+  //       purchaseOrderProduct.qty      = purchaseOrderProductDto.qty;
+  //       purchaseOrderProduct.comment  = purchaseOrderProductDto.comment;
+  //       purchaseOrderProduct.name     = product.name;
+  //       purchaseOrderProduct.code     = product.code;
+  //       purchaseOrderProduct.cost     = purchaseOrderProductDto.cost;
+  //       purchaseOrderProduct.amount   = purchaseOrderProductDto.amount;
+  //       purchaseOrderProduct.status   = purchaseOrderProductDto.status;
+        
+  //       return purchaseOrderProduct;
+  //     })
 
-    } catch (error) {
-      this.logger.error(`bulkInsertPurchaseOrderProducts: error=${error.message}`);
-      throw error;
-    }
-  }
+  //   })
+  //   .then( (purchaseOrderProductListToInsert: PurchaseOrderProduct[]) => {
+      
+  //     return this.purchaseOrderProductRepository.findBy( { purchaseOrder: order } ) // * find order products to remove
+  //     .then( (purchaseOrderProductListToDelete: PurchaseOrderProduct[]) => this.purchaseOrderProductRepository.remove(purchaseOrderProductListToDelete) ) // * remove order products
+  //     .then( () => this.bulkInsertPurchaseOrderProducts(purchaseOrderProductListToInsert) ) // * insert order products
+  //     .then( (purchaseOrderProductList: PurchaseOrderProduct[]) => {
 
-  private updateMovements(dto: PurchaseOrderDto): void {
+  //       this.updateProductCost(purchaseOrderProductDtoList, purchaseOrderProductList);
 
-    if(dto.status == PurchaseOrderStatusEnum.ORDER || dto.status == PurchaseOrderStatusEnum.PAID) {  
-      // * replication data
-      const movementDtoList = dto.productList.map( (value) => new MovementDto(MovementTypeEnum.IN, MovementReasonEnum.PURCHASE, value.qty, value.id, dto.user?.id, undefined, dto.id));
+  //       const end = performance.now();
+  //       this.logger.log(`updatePurchaseOrderProduct: OK, runtime=${(end - start) / 1000} seconds`);
+  //       return purchaseOrderProductList;
+  //     })
+
+  //   })
+  //   .catch(error => {
+  //     this.logger.error(`updatePurchaseOrderProduct: error=${error.message}`);
+  //     throw error;
+  //   })
+
+  // }
+
+  // private bulkInsertPurchaseOrderProducts(purchaseOrderProductList: PurchaseOrderProduct[]): Promise<PurchaseOrderProduct[]> {
+  //   const start = performance.now();
+  //   this.logger.log(`bulkInsertPurchaseOrderProducts: starting process... listSize=${purchaseOrderProductList.length}`);
+
+  //   const newPurchaseOrderProductList: PurchaseOrderProduct[] = purchaseOrderProductList.map( (value) => this.purchaseOrderProductRepository.create(value));
+    
+  //   try {
+  //     return this.purchaseOrderProductRepository.manager.transaction( async(transactionalEntityManager) => {
+        
+  //       return transactionalEntityManager
+  //       .createQueryBuilder()
+  //       .insert()
+  //       .into(PurchaseOrderProduct)
+  //       .values(newPurchaseOrderProductList)
+  //       .execute()
+  //       .then( (insertResult: InsertResult) => {
+  //         const end = performance.now();
+  //         this.logger.log(`bulkInsertPurchaseOrderProducts: OK, runtime=${(end - start) / 1000} seconds, insertResult=${JSON.stringify(insertResult.raw)}`);
+  //         return newPurchaseOrderProductList;
+  //       })
+
+  //     })
+
+  //   } catch (error) {
+  //     this.logger.error(`bulkInsertPurchaseOrderProducts: error=${error.message}`);
+  //     throw error;
+  //   }
+  // }
+
+  private updateStockMovements(dto: PurchaseOrderDto): Promise<string> {
+
+    if(dto.status == PurchaseOrderStatusEnum.ORDER || dto.status == PurchaseOrderStatusEnum.PAID) {
+      const movementDtoList = dto.productList.map( (value) => new MovementDto(MovementTypeEnum.IN, MovementReasonEnum.PURCHASE, value.qty, value.id, dto.userId, undefined, dto.id, dto.code));
       const messageDto = new MessageDto(SourceEnum.API_PURCHASES, ProcessEnum.MOVEMENT_UPDATE, JSON.stringify(movementDtoList));
-      this.replicationService.sendMessages([messageDto]);
+      return this.replicationService.sendMessage(messageDto);
     }
 
     if(dto.status == PurchaseOrderStatusEnum.CANCELLED) {
       const jsonBasic: JsonBasic = { id: dto.id }
       const messageDto = new MessageDto(SourceEnum.API_PURCHASES, ProcessEnum.MOVEMENT_DELETE, JSON.stringify(jsonBasic));
-      this.replicationService.sendMessages([messageDto]);
+      this.replicationService.sendMessage(messageDto);
     }
+
+    throw new Error(`unexpected order status, status=${dto.status}`);
     
   }
-  // private findByValue(paginationDto: SearchPaginationDto, inputDto: SearchInputDto, companyId?: string): Promise<PurchaseOrder[]> {
-  //   const {page=1, limit=this.dbDefaultLimit} = paginationDto;
 
-  //   // * search by id or partial value
-  //   const value = inputDto.search;
-  //   if(value) {
-  //     const whereById     = { id: value, active: true };
-  //     const whereByValue  = { company: { id: companyId }, comment: Like(`%${value}%`), active: true };
-  //     const where = isUUID(value) ? whereById : whereByValue;
+  // private updateMovements(dto: PurchaseOrderDto): void {
 
-  //     return this.purchaseOrderRepository.find({
-  //       take: limit,
-  //       skip: (page - 1) * limit,
-  //       where: where,
-  //       relations: {
-  //         purchaseOrderProduct: true
-  //       },
-  //       order: { createdAt: "DESC" }
-  //     })
+  //   if(dto.status == PurchaseOrderStatusEnum.ORDER || dto.status == PurchaseOrderStatusEnum.PAID) {  
+  //     // * replication data
+  //     const movementDtoList = dto.productList.map( (value) => new MovementDto(MovementTypeEnum.IN, MovementReasonEnum.PURCHASE, value.qty, value.id, dto.user?.id, undefined, dto.id));
+  //     const messageDto = new MessageDto(SourceEnum.API_PURCHASES, ProcessEnum.MOVEMENT_UPDATE, JSON.stringify(movementDtoList));
+  //     this.replicationService.sendMessages([messageDto]);
   //   }
 
-  //   // * search by value list
-  //   if(inputDto.searchList?.length > 0){
-  //     return this.purchaseOrderRepository.find({
-  //       take: limit,
-  //       skip: (page - 1) * limit,
-  //       where: {
-  //         company: { 
-  //           id: companyId
-  //         },
-  //         comment: Raw( (fieldName) => inputDto.searchList.map(value => `${fieldName} LIKE '%${value.replace(' ', '%')}%'`).join(' OR ') ),
-  //         // comment: In(inputDto.searchList),
-  //         active: true
-  //       },
-  //       relations: {
-  //         purchaseOrderProduct: true
-  //       },
-  //       order: { createdAt: "DESC" }
-  //     })
+  //   if(dto.status == PurchaseOrderStatusEnum.CANCELLED) {
+  //     const jsonBasic: JsonBasic = { id: dto.id }
+  //     const messageDto = new MessageDto(SourceEnum.API_PURCHASES, ProcessEnum.MOVEMENT_DELETE, JSON.stringify(jsonBasic));
+  //     this.replicationService.sendMessages([messageDto]);
   //   }
-
-  //   // * search all
-  //   return this.purchaseOrderRepository.find({
-  //     take: limit,
-  //     skip: (page - 1) * limit,
-  //     where: { 
-  //       company: { 
-  //         id: companyId 
-  //       },
-  //       active: true 
-  //     },
-  //     relations: {
-  //       purchaseOrderProduct: true
-  //     },
-  //     order: { createdAt: "DESC" }
-  //   })
     
   // }
 
   private searchEntitiesByValues(companyId: string, paginationDto: SearchPaginationDto, inputDto: PurchaseOrderSearchInputDto): Promise<PurchaseOrder[]> {
     const {page=1, limit=this.dbDefaultLimit} = paginationDto;
 
-    const query = this.purchaseOrderRepository.createQueryBuilder('a')
+    const query = this.orderRepository.createQueryBuilder('a')
     .leftJoinAndSelect('a.company', 'c')
     .leftJoinAndSelect('a.purchaseType', 'pt')
     .leftJoinAndSelect('a.purchaseOrderProduct', 'op')
-    .leftJoinAndSelect('op.product', 'p')
     .where('a.companyId = :companyId', { companyId })
     .andWhere('a.active = :active', { active: true });
 
@@ -751,9 +617,9 @@ export class PurchaseOrderService {
 
   generatePurchaseOrderWithProductList(order: PurchaseOrder, purchaseOrderProductList: PurchaseOrderProduct[]): PurchaseOrderDto {
     
-    const purchaseOrderProductDtoList: PurchaseOrderProductDto[] = purchaseOrderProductList.map( (purchaseOrderProduct: PurchaseOrderProduct) => new PurchaseOrderProductDto(purchaseOrderProduct.product.id, purchaseOrderProduct.qty, purchaseOrderProduct.name, purchaseOrderProduct.cost, purchaseOrderProduct.amount, purchaseOrderProduct.comment, purchaseOrderProduct.code, purchaseOrderProduct.status) );
+    const purchaseOrderProductDtoList: PurchaseOrderProductDto[] = purchaseOrderProductList.map( (purchaseOrderProduct: PurchaseOrderProduct) => new PurchaseOrderProductDto(purchaseOrderProduct.productId, purchaseOrderProduct.qty, purchaseOrderProduct.name, purchaseOrderProduct.cost, purchaseOrderProduct.amount, purchaseOrderProduct.comment, purchaseOrderProduct.code, purchaseOrderProduct.status) );
     const purchaseTypeDto = new PurchaseTypeDto(order.company.id, order.purchaseType.name, order.purchaseType.id);
-    const documentTypeDto = order.documentNumber ? new DocumentTypeDto(order.company.id, order.documentType.name, order.documentType.id) : undefined;
+    // const documentTypeDto = order.documentNumber ? new DocumentTypeDto(order.company.id, order.documentType.name, order.documentType.id) : undefined;
 
     // * format createdAt
     let createdAtFormat = moment(order.createdAt).format(DateFormatEnum.DATETIME_FORMAT);
@@ -764,7 +630,6 @@ export class PurchaseOrderService {
       order.company.id,
       order.id,
       purchaseTypeDto.id,
-      documentTypeDto?.id,
       order.code,
       order.providerIdDoc,
       order.providerName,
@@ -773,37 +638,42 @@ export class PurchaseOrderService {
       order.providerAddress,
       order.comment,
       order.amount,
+      order.documentTypeId,
       order.documentNumber,
       order.status,
       createdAtFormat,
       order.company,
       order.user,
       purchaseTypeDto,
-      documentTypeDto,
       purchaseOrderProductDtoList
     );
 
     return orderDto;
   }
 
-  private updateProductCost(dtoList: PurchaseOrderProductDto[] = [], entityList: PurchaseOrderProduct[] = []): void {
+  private updateProductCost(orderDto: PurchaseOrderDto, updateProductIdList: string[] = []): void {
 
-    // * update product cost
-    const updateProductIdList = dtoList.filter(value => value.updateProductCost).map(value => value.id);
-    
-    const productDtoList = entityList.reduce( (acc, value) => {
-      if(updateProductIdList.includes(value.product.id)){
+    const productCostDtoList: ProductCostDto[] = orderDto.productList.reduce( (acc, value) => {
+      if(updateProductIdList.includes(value.id)) {
         const cost = value.amount / value.qty;
-        const product = value.product;
-        const productDto = new ProductDto(product.company.id, product.name, cost, product.type, product.enable4Sale, product.id, product.productCategory?.id, product.code, product.description, product.unit, product.price);  
-        acc.push(productDto);
+        acc.push(new ProductCostDto(value.id, cost, orderDto.id, orderDto.user?.id));
       }
 
       return acc;
     }, []);
 
+    if(productCostDtoList.length == 0){
+      this.logger.warn('updateProductCost: not executed (empty list)');
+      return;
+    }
+
+    // TODO: Descomentar cuando se ajuste la api de products
     // * replication data
-    const messageDto = new MessageDto(SourceEnum.API_PURCHASES, ProcessEnum.PRODUCT_UPDATE, JSON.stringify(productDtoList));
-    this.replicationService.sendMessages([messageDto]);
+    const messageDto = new MessageDto(SourceEnum.API_PURCHASES, ProcessEnum.PRODUCT_COST_UPDATE, JSON.stringify(productCostDtoList));
+    // this.replicationService.sendMessage(messageDto)
+    // .catch(error => {
+    //   this.logger.error('updateProductCost: error', error);
+    // })
+
   }
 }

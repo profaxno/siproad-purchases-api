@@ -1,8 +1,6 @@
 import { Column, CreateDateColumn, Entity, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
-import { Product, ProductCategory } from "src/purchases/products/entities";
 import { User } from "src/purchases/users/entities/user.entity";
 import { PurchaseOrder, PurchaseType } from "src/purchases/orders/entities";
-import { DocumentType } from "src/purchases/documentTypes/entities/document-type.entity";
 
 @Entity("pur_company")
 export class Company {
@@ -28,17 +26,17 @@ export class Company {
   )
   user: User;
 
-  @OneToMany(
-    () => Product,
-    (product) => product.company
-  )
-  product: Product;
+  // @OneToMany(
+  //   () => Product,
+  //   (product) => product.company
+  // )
+  // product: Product;
 
-  @OneToMany(
-    () => ProductCategory,
-    (productCategory) => productCategory.company
-  )
-  productCategory: ProductCategory;
+  // @OneToMany(
+  //   () => ProductCategory,
+  //   (productCategory) => productCategory.company
+  // )
+  // productCategory: ProductCategory;
 
   @OneToMany(
     () => PurchaseOrder,
@@ -52,9 +50,9 @@ export class Company {
   )
   purchaseType: PurchaseType;
   
-  @OneToMany(
-    () => DocumentType,
-    (documentType) => documentType.company
-  )
-  documentType: DocumentType;
+  // @OneToMany(
+  //   () => DocumentType,
+  //   (documentType) => documentType.company
+  // )
+  // documentType: DocumentType;
 }

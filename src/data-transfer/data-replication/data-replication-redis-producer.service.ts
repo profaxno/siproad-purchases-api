@@ -46,15 +46,12 @@ export class DataReplicationRedisProducerService {
   // * Method to send a message to the queue
   async sendMessageToQueues(messageDto: MessageDto): Promise<string> {
 
-    // * generate promises
     const promiseList: Promise<string>[] = [];
     promiseList.push(this.sendMessage(this.queueProducts, messageDto));
-    
-    // * exec promises
     const promiseResultList = await Promise.allSettled(promiseList)
-    
-    // * process results
+
     let result: string = "";
+
     promiseResultList.forEach( (promiseResult, index) => {
       if (promiseResult.status === 'fulfilled') 
         result += `${index} job success ${promiseResult.value}|`;
@@ -62,38 +59,16 @@ export class DataReplicationRedisProducerService {
     });
     
     return result;
-
-    // * select queue
-    // let queue: Queue;
-
-    // switch (messageDto.process) {
-    //   case ProcessEnum.MOVEMENT_UPDATE:
-    //   case ProcessEnum.MOVEMENT_DELETE: {
-    //     queue = this.queueProducts
-    //     break;
-    //   }
-    // }
-
-    // if(!queue) {
-    //   throw new Error(`process no implemented, process=${messageDto.process}`);
-    // }
-
-    // return queue.add('job', messageDto)
-    // .then((job) => `job generated, jobId=${job.id}`)
-    // .catch((error) => {
-    //   this.logger.error(`sendMessage: error=${JSON.stringify(error)}`);
-    //   throw new Error(`Error sending message to REDIS: ${error.message}`);
-    // });
   }
 
   private sendMessage(queue: Queue, messageDto: MessageDto) {
 
-    return queue.add('job', messageDto)
+    return queue.add('job', messageDto, { attempts: 3, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: true, removeOnFail: false })
     .then((job: Job) => `job generated, id=${job.id}`)
     .catch((error) => {
       this.logger.error(`sendMessage: error=${JSON.stringify(error)}`);
       throw error;
-    });
+    })
 
   }
   
