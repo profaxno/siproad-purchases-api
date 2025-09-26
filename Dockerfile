@@ -29,7 +29,6 @@ WORKDIR /app
 COPY --from=builder /app/package.json /app/package-lock.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/nanoid-wrapper.cjs ./
 
 # Expone el puerto en el que corre la app
 EXPOSE 80

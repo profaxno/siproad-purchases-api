@@ -1,6 +1,6 @@
 import { IsArray, IsBoolean, IsInt, IsNumber, IsOptional, IsPositive, IsString, IsUUID, MaxLength, Min, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
-import { PurchaseTypeDto, DocumentTypeDto } from "./";
+import { PurchaseTypeDto } from "./";
 
 export class PurchaseOrderCompanyDto {
   @IsUUID()
@@ -121,20 +121,15 @@ export class PurchaseOrderDto {
   purchaseType?: PurchaseTypeDto;
 
   @IsOptional()
-  @Type(() => DocumentTypeDto)
-  documentType?: DocumentTypeDto;
-
-  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PurchaseOrderProductDto)
   productList?: PurchaseOrderProductDto[];
 
-  constructor(companyId: string, id?: string, purchaseTypeId?: string, documentTypeId?: string, code?: number, providerIdDoc?: string, providerName?: string, providerEmail?: string, providerPhone?: string, providerAddress?: string, comment?: string, amount?: number, documentNumber?: string, status?: number, createdAt?: string, company?: PurchaseOrderCompanyDto, user?: PurchaseOrderUserDto, purchaseType?: PurchaseTypeDto, documentType?: DocumentTypeDto, productList?: PurchaseOrderProductDto[]){
+  constructor(companyId: string, id?: string, purchaseTypeId?: string, code?: number, providerIdDoc?: string, providerName?: string, providerEmail?: string, providerPhone?: string, providerAddress?: string, comment?: string, amount?: number, documentTypeId?: string, documentNumber?: string, status?: number, createdAt?: string, company?: PurchaseOrderCompanyDto, user?: PurchaseOrderUserDto, purchaseType?: PurchaseTypeDto, productList?: PurchaseOrderProductDto[]){
     this.companyId = companyId;
     this.id = id;
     this.purchaseTypeId = purchaseTypeId;
-    this.documentTypeId = documentTypeId;
     this.code = code;
     this.providerIdDoc = providerIdDoc;
     this.providerName = providerName;
@@ -143,13 +138,13 @@ export class PurchaseOrderDto {
     this.providerAddress = providerAddress
     this.comment = comment;
     this.amount = amount;
+    this.documentTypeId = documentTypeId;
     this.documentNumber = documentNumber;
     this.status = status;
     this.createdAt = createdAt;
     this.company = company;
     this.user = user;
     this.purchaseType = purchaseType;
-    this.documentType = documentType;
     this.productList = productList;
   }
 }

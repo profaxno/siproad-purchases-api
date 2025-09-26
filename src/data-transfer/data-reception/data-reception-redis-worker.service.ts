@@ -14,11 +14,6 @@ import { CompanyService } from 'src/purchases/companies/company.service';
 import { UserDto } from 'src/purchases/users/dto/user.dto';
 import { UserService } from 'src/purchases/users/user.service';
 
-import { ProductDto } from 'src/purchases/products/dto';
-import { ProductService } from 'src/purchases/products/product.service';
-import { ProductCategoryService } from 'src/purchases/products/product-category.service';
-import { DocumentTypeService } from 'src/purchases/documentTypes/document-type.service';
-
 @Injectable()
 export class DataReceptionWorkerService implements OnModuleInit {
 
@@ -36,9 +31,6 @@ export class DataReceptionWorkerService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly companyService: CompanyService,
     private readonly userService: UserService,
-    private readonly documentTypeService: DocumentTypeService,
-    private readonly productService: ProductService,
-    private readonly productCategoryService: ProductCategoryService
   ) {
     // * Retrieve the Redis configuration values from ConfigService
     this.redisHost = this.configService.get('redisHost');
@@ -110,39 +102,6 @@ export class DataReceptionWorkerService implements OnModuleInit {
         const idList = dtoList.map(value => value.id);
         return this.userService.removeBatch(idList)
         .then( () => 'delete user executed' )
-      }
-      case ProcessEnum.DOCUMENT_TYPE_UPDATE: {
-        const dtoList: UserDto[] = JSON.parse(messageDto.jsonData);
-        return this.documentTypeService.updateBatch(dtoList)
-        .then( () => 'update document type executed' )
-      }
-      case ProcessEnum.DOCUMENT_TYPE_DELETE: {
-        const dtoList: JsonBasic[] = JSON.parse(messageDto.jsonData);
-        const idList = dtoList.map(value => value.id);
-        return this.documentTypeService.removeBatch(idList)
-        .then( () => 'delete document type executed' )
-      }
-      case ProcessEnum.PRODUCT_UPDATE: {
-        const dtoList: ProductDto[] = JSON.parse(messageDto.jsonData);
-        return this.productService.updateBatch(dtoList)
-        .then( () => 'update product executed' )
-      }
-      case ProcessEnum.PRODUCT_DELETE: {
-        const dtoList: JsonBasic[] = JSON.parse(messageDto.jsonData);
-        const idList = dtoList.map(value => value.id);
-        return this.productService.removeBatch(idList)
-        .then( () => 'delete product executed' )
-      }
-      case ProcessEnum.PRODUCT_CATEGORY_UPDATE: {
-        const dtoList: ProductDto[] = JSON.parse(messageDto.jsonData);
-        return this.productCategoryService.updateBatch(dtoList)
-        .then( () => 'update product category executed' )
-      }
-      case ProcessEnum.PRODUCT_CATEGORY_DELETE: {
-        const dtoList: JsonBasic[] = JSON.parse(messageDto.jsonData);
-        const idList = dtoList.map(value => value.id);
-        return this.productCategoryService.removeBatch(idList)
-        .then( () => 'delete product category executed' )
       }
       default: {
         this.logger.error(`process not implemented, process=${messageDto.process}`);

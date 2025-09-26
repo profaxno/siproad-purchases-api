@@ -1,5 +1,5 @@
 import { Column, CreateDateColumn, Entity, ManyToOne, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
-import { PurchaseType, DocumentType, PurchaseOrderProduct } from ".";
+import { PurchaseType, PurchaseOrderProduct } from ".";
 import { Company } from "src/purchases/companies/entities/company.entity";
 import { User } from "src/purchases/users/entities/user.entity";
 
@@ -13,10 +13,10 @@ export class PurchaseOrder {
   code: number;
   
   @Column('varchar', { length: 50, nullable: true })
-  providerIdDoc: string;
+  providerName: string;
 
   @Column('varchar', { length: 50, nullable: true })
-  providerName: string;
+  providerIdDoc: string;
 
   @Column('varchar', { length: 50, nullable: true })
   providerEmail: string;
@@ -32,6 +32,9 @@ export class PurchaseOrder {
 
   @Column('double', { default: 0 })
   amount: number;
+
+  @Column('varchar', { length: 100 })
+  documentTypeId: string;
 
   @Column('varchar', { length: 50, nullable: true })
   documentNumber: string;
@@ -76,11 +79,11 @@ export class PurchaseOrder {
   )
   purchaseType: PurchaseType;
 
-  @ManyToOne(
-    () => DocumentType,
-    (documentType) => documentType.purchaseOrder,
-    { eager: true }
-  )
-  documentType: DocumentType;
+  // @ManyToOne(
+  //   () => DocumentType,
+  //   (documentType) => documentType.purchaseOrder,
+  //   { eager: true }
+  // )
+  // documentType: DocumentType;
 
 }
